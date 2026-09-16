@@ -1,0 +1,21 @@
+# environment
+.venv/
+
+# data & weights (never commit these)
+data/*
+!data/**/.gitkeep
+outputs/*
+!outputs/.gitkeep
+models/*
+!models/.gitkeep
+*.pt
+runs/
+
+# python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# tooling
+wandb/
+.vscode/
