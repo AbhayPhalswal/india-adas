@@ -11,11 +11,13 @@
 # 3. Right-click it → **Copy** → **Copy as cURL (bash)**
 # 4. Paste the whole thing into the `PASTE` box in Cell 2
 #
-# The session cookie is HttpOnly, so this is the only way to get it. If the download stops with
-# "cookie not accepted" later, repeat these steps — sessions expire.
+# india-data's access token expires every **15 minutes**. The transfer cell handles that itself:
+# it re-uses refreshed cookies the server sends back, tries the site's refresh endpoint, and if
+# both fail it **pauses and asks you to paste a fresh cURL** (log in again at india-data.org first
+# if the site logged you out). You never need to re-run cells for that.
 #
-# **How to open this in Colab:** File → Upload notebook → pick this .py file
-# (Colab reads the `# %%` cell markers), or paste each cell into a fresh notebook.
+# **How to open this in Colab:** push to GitHub and open
+# colab.research.google.com/github/AbhayPhalswal/india-adas/blob/main/notebooks/iddx_to_gdrive.ipynb
 
 # %% [markdown]
 # ## Cell 1 — Google sign-in (for Drive upload) + mount Drive (for the tiny resume-state file)
@@ -39,7 +41,8 @@ PASTE = r"""
 PASTE HERE
 """
 
-import re
+import re, requests
+
 def extract_cookie(s):
     s = s.strip()
     if s.lower().startswith('curl'):
@@ -50,15 +53,25 @@ def extract_cookie(s):
         return m.group(2).strip()
     return s
 
+def cookie_jar_from_string(s):
+    jar = requests.cookies.RequestsCookieJar()
+    for part in s.split(';'):
+        if '=' in part:
+            k, v = part.strip().split('=', 1)
+            jar.set(k.strip(), v.strip(), domain='india-data.org', path='/')
+    return jar
+
 COOKIE = extract_cookie(PASTE)
 assert COOKIE and 'PASTE HERE' not in COOKIE, 'Paste the cURL / cookie first'
-print(f'Cookie captured ({len(COOKIE)} chars)')
+names = [p.strip().split('=', 1)[0] for p in COOKIE.split(';') if '=' in p]
+print(f'Cookie captured: {", ".join(names)}')
+assert 'access-token-dfs' in names, 'That cookie has no access-token-dfs — copy the cURL from a request made while logged in'
 
 # %% [markdown]
 # ## Cell 3 — settings + an 82-byte test request to prove the cookie works
 
 # %%
-import requests, time, json, os, datetime
+import time, json, os, datetime
 
 DOWNLOAD_URL = 'https://india-data.org/du/download/v1/download-file'
 FILE_NAME    = '99124475-fc84-46dc-9dad-f5e34c18f9e0/c884d2d3-14b3-48c3-a6a3-733b0c2ee210/DATASET-FILE/20250609055823695_iddx.tar.gz'
@@ -70,9 +83,17 @@ DRIVE_FILE_NAME = 'iddx.tar.gz'
 UPLOAD_CHUNK    = 256 * 1024 * 1024  # must be a multiple of 256 KiB
 STATE_PATH      = '/content/drive/MyDrive/.iddx_upload_state.json'
 
+# If you find the site's real refresh request in DevTools (filter the Network tab for "refresh"),
+# put its full URL here. Leave empty to let the code try the usual candidates.
+REFRESH_URL = ''
+REFRESH_CANDIDATES = ['/core/authorization/refresh-token', '/core/authorization/refresh',
+                      '/core/authorization/token/refresh', '/core/authorization/refresh-access-token',
+                      '/core/authorization/get-access-token', '/core/auth/refresh-token']
+
 sess = requests.Session()
-sess.headers.update({'fileName': FILE_NAME, 'app-name': 'DFS', 'Cookie': COOKIE,
-                     'User-Agent': 'Mozilla/5.0'})
+sess.cookies = cookie_jar_from_string(COOKIE)
+sess.headers.update({'fileName': FILE_NAME, 'app-name': 'DFS', 'User-Agent': 'Mozilla/5.0',
+                     'Referer': 'https://india-data.org/dataset-details/99124475-fc84-46dc-9dad-f5e34c18f9e0'})
 
 r = sess.get(DOWNLOAD_URL, headers={'Range': f'bytes={TOTAL-82}-'}, timeout=60)
 print(r.status_code, r.headers.get('content-range'), len(r.content), 'bytes')
@@ -83,6 +104,34 @@ print('Cookie OK — server is serving the file')
 # ## Cell 4 — the transfer (re-run this cell to resume after any disconnect)
 
 # %%
+def try_refresh():
+    """Ask india-data for a new access token. True if the access-token cookie changed."""
+    global REFRESH_URL
+    before = sess.cookies.get('access-token-dfs')
+    urls = [REFRESH_URL] if REFRESH_URL else ['https://india-data.org' + c for c in REFRESH_CANDIDATES]
+    for u in urls:
+        for method in ('post', 'get'):
+            try:
+                r = sess.request(method, u, timeout=30)
+            except requests.RequestException:
+                continue
+            if r.status_code < 400 and sess.cookies.get('access-token-dfs') not in (None, before):
+                REFRESH_URL = u
+                print(f'  token refreshed via {method.upper()} {u}')
+                return True
+    return False
+
+def repaste():
+    s = input('\nindia-data session expired. In Chrome: reload india-data.org (log in again if needed), '
+              'copy a fresh cURL (bash) from the Network tab, paste it here and press Enter:\n')
+    sess.cookies = cookie_jar_from_string(extract_cookie(s))
+    print('  new cookie loaded, continuing')
+
+def reauth():
+    if not try_refresh():
+        repaste()
+
+
 class RemoteFile:
     """Reads the india-data file by Range requests; behaves like a sequential file."""
     def __init__(self):
@@ -90,11 +139,13 @@ class RemoteFile:
         self.buf = bytearray()   # bytes starting at self.pos
 
     def _fetch(self, offset):
-        for attempt in range(10):
+        for attempt in range(12):
             try:
                 r = sess.get(DOWNLOAD_URL, headers={'Range': f'bytes={offset}-'}, timeout=180)
                 if r.status_code in (401, 403):
-                    raise SystemExit('Cookie expired / not accepted — get a fresh cURL, re-run Cells 2, 3, 4')
+                    print(f'  auth rejected ({r.status_code}) at {offset:,} — refreshing')
+                    reauth()
+                    continue
                 if r.status_code != 206:
                     raise IOError(f'status {r.status_code}: {r.text[:200]}')
                 start = int(r.headers['content-range'].split()[1].split('-')[0])
@@ -105,7 +156,7 @@ class RemoteFile:
                 wait = min(90, 3 * 2 ** attempt)
                 print(f'  download hiccup at {offset:,}: {e} — retry in {wait}s')
                 time.sleep(wait)
-        raise RuntimeError('download: gave up after 10 attempts')
+        raise RuntimeError('download: gave up after 12 attempts')
 
     def seek(self, offset):
         if offset != self.pos:
@@ -168,8 +219,13 @@ else:
 remote = RemoteFile()
 remote.seek(next_off)
 t0, done0 = time.time(), next_off
+last_refresh = time.time()
 
 while next_off < TOTAL:
+    # proactive refresh every 12 min once we know a working refresh URL (token lives 15 min)
+    if REFRESH_URL and time.time() - last_refresh > 12 * 60:
+        try_refresh(); last_refresh = time.time()
+
     chunk = remote.read(UPLOAD_CHUNK)
     end = next_off + len(chunk) - 1
     resync = False
