@@ -18,20 +18,24 @@ Legend: [x] done  [ ] not started  [~] in progress  [!] needs you (account / har
 - [x] experiments/LOG.md
 - [x] src/level0_detect.py
 - [x] README.md
-- [ ] git init + first commit
+- [x] git init + first commit (d42c01a)
 
 ### Level 0 run
 - [ ] Pipeline smoke test on ultralytics sample image (proves toolchain)
-- [!] Indian dashcam footage in data/raw/ — record 10 min from passenger seat, or download a YouTube dashcam clip
+- [!] Footage today: iPhone 17 Pro in cab (1080p60, Most Compatible, HDR off, AE/AF lock), Gurugram → Dwarka via Kapashera, whole trip → data/raw/2026-09-16_gurugram-dwarka_iphone_clip1.mp4
+- [ ] From tomorrow: GoPro (primary) + 270° multi-lens camera
 - [ ] Run `python src/level0_detect.py data/raw/<clip>.mp4`
 - [ ] Watch outputs/level0/ video, note what it gets wrong (autos, cattle, handcarts, close two-wheelers)
 - [ ] Write the honest paragraph in README.md "Level 0 — what I saw"
 - [ ] Fill in the LOG.md row
 
 ### Accounts (only you can do these)
-- [!] Register at https://insaan.iiit.ac.in for IDD datasets
-- [!] Register at TiHAN / IIT Hyderabad portal for DriveIndia
-- [!] Create GitHub repo `india-adas`, add remote, push
+- [x] IDD: found the working official portal — india-data.org (IHub-Data, IIIT Hyderabad). Account created 2026-09-18.
+- [x] IDD-X access requested and APPROVED (2026-09-18) — 171.4 GB single tar.gz
+- [~] IDD-X → Google Drive "driving dataset" folder via Colab: notebooks/iddx_to_gdrive.py (needs your india-data cookie; resumable)
+- [ ] IDD Detection / Segmentation: check india-data.org Datasets page for the small ones (Level 1 needs these, not IDD-X)
+- [!] DriveIndia: download EULA + submit request form (links in notes/dataset-sources.md)
+- [x] GitHub repo created and pushed: https://github.com/AbhayPhalswal/india-adas
 
 ## Week 1–2 (Level 0 complete)
 - [ ] Annotated domain-gap video committed
@@ -52,10 +56,13 @@ Legend: [x] done  [ ] not started  [~] in progress  [!] needs you (account / har
 ## Week 9–12 (Level 2)
 - [ ] Segmentation on IDD (mIoU)
 - [ ] Depth Anything V2 on Indian footage
-- [ ] Tracking → bird's-eye-view demo video
+- [ ] Tracking → bird's-eye-view demo video (single front camera first)
+- [ ] BEV from the 270° multi-lens camera: per-lens calibration (OpenCV chessboard) + relative pose, then fuse
 
 ## Week 13–20 (Level 3)
-- [ ] Buy ELM327 OBD-II dongle + phone mount (~₹2–4k)
+- [ ] Buy ELM327 OBD-II dongle (~₹1–1.5k) for the Harrier — mount already owned (GoPro)
+- [ ] Mount the 270° multi-lens camera in the Harrier for side coverage; find out stitched vs per-lens output + resolution per lens
+- [ ] Harrier ADAS-failure logging: phone/GoPro on the instrument cluster + front camera on road, note every false brake / LDW / AEB event
 - [ ] Sync test (torch-flash trick), verified < 20 ms
 - [ ] 10 h collected → 40 h collected
 - [ ] Face/plate blur pass
