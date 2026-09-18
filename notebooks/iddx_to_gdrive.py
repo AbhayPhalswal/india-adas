@@ -107,6 +107,34 @@ print(r.status_code, r.headers.get('content-range'), len(r.content), 'bytes')
 assert r.status_code == 206 and len(r.content) == 82, 'Cookie not accepted — copy a fresh cURL and re-run Cell 2'
 print('Cookie OK — server is serving the file')
 
+# Scan the site's own JavaScript for its token-refresh endpoint so we can renew the 15-min token
+# ourselves instead of asking you for a new cURL every quarter hour.
+def discover_refresh_candidates():
+    found = []
+    try:
+        html = sess.get('https://india-data.org/', timeout=30).text
+        for s in re.findall(r'<script[^>]+src="([^"]+)"', html):
+            if not s.split('?')[0].endswith('.js'):
+                continue
+            u = s if s.startswith('http') else 'https://india-data.org/' + s.lstrip('/')
+            js = sess.get(u, timeout=60).text
+            for m in re.finditer(r'["\']([A-Za-z0-9_./-]*[Rr]efresh[A-Za-z0-9_./-]*)["\']', js):
+                p = m.group(1)
+                if p not in found and 5 < len(p) < 80 and not p.endswith('.js'):
+                    found.append(p)
+    except Exception as e:
+        print('  (could not scan site JS:', e, ')')
+    return found[:12]
+
+discovered = discover_refresh_candidates()
+print('refresh-related strings in site JS:', discovered or 'none found')
+for p in discovered:
+    for base in ('', '/core/authorization', '/core'):
+        cand = p if p.startswith('/') else base + '/' + p
+        if cand.startswith('/') and cand not in REFRESH_CANDIDATES:
+            REFRESH_CANDIDATES.insert(0, cand)
+print(f'{len(REFRESH_CANDIDATES)} refresh endpoints will be tried when the token expires')
+
 # %% [markdown]
 # ## Cell 4 — the transfer (re-run this cell to resume after any disconnect)
 
@@ -125,13 +153,15 @@ def try_refresh():
         for u in urls:
             for method in ('post', 'get'):
                 try:
-                    r = sess.request(method, u, timeout=30)
+                    r = sess.request(method, u, timeout=10)
                 except requests.RequestException:
                     continue
                 if r.status_code < 400 and sess.cookies.get('access-token-dfs') not in (None, before):
                     REFRESH_URL = u
-                    print(f'  token refreshed via {method.upper()} {u}')
+                    print(f'  token refreshed via {method.upper()} {u}  ← tell Claude this URL')
                     return True
+                if r.status_code == 404:
+                    break                      # no such route; don't bother with the other method
         return False
 
 def repaste():
@@ -150,14 +180,14 @@ class RemoteFile:
         self.pool = ThreadPoolExecutor(max_workers=WORKERS)
 
     def _fetch_once(self, offset):
-        """One 25 MiB chunk from offset. Raises AuthNeeded on 401/403."""
+        """One 25 MiB chunk from offset. Raises AuthNeeded when the server stops serving bytes."""
+        last = ''
         for attempt in range(6):
             try:
                 r = sess.get(DOWNLOAD_URL, headers={'Range': f'bytes={offset}-'}, timeout=180)
-            except requests.RequestException:
+            except requests.RequestException as e:
+                last = f'network: {e}'
                 time.sleep(min(60, 2 * 2 ** attempt)); continue
-            if r.status_code in (401, 403):
-                raise AuthNeeded(offset)
             if r.status_code == 206:
                 try:
                     start = int(r.headers['content-range'].split()[1].split('-')[0])
@@ -166,8 +196,15 @@ class RemoteFile:
                 full = len(r.content) == SERVER_CHUNK or offset + len(r.content) == TOTAL
                 if start == offset and full:
                     return r.content
-            time.sleep(min(60, 2 * 2 ** attempt))   # 429 / 5xx / short or misaligned chunk → retry
-        raise IOError(f'chunk at {offset:,} failed after 6 attempts')
+                last = f'206 but got offset {start} / {len(r.content)} bytes'
+            elif r.status_code in (429, 500, 502, 503, 504):
+                last = f'{r.status_code} (server busy)'
+            else:
+                # 401/403, or anything else odd (e.g. a 200 login page, 400 "jwt expired"):
+                # almost always the 15-minute token dying — hand it to the auth path immediately
+                raise AuthNeeded(f'{r.status_code} {r.text[:120]!r}')
+            time.sleep(min(60, 2 * 2 ** attempt))
+        raise IOError(f'chunk at {offset:,} failed after 6 attempts (last: {last})')
 
     def _fetch_many(self, offsets):
         """Fetch chunks in parallel; returns them in the same order as offsets."""
@@ -177,16 +214,16 @@ class RemoteFile:
             if not todo:
                 break
             futs = {o: self.pool.submit(self._fetch_once, o) for o in todo}
-            auth_needed = False
+            auth_needed = None
             for o, f in futs.items():
                 try:
                     got[o] = f.result()
-                except AuthNeeded:
-                    auth_needed = True
+                except AuthNeeded as e:
+                    auth_needed = auth_needed or str(e)
                 except Exception as e:
                     print(f'  download hiccup at {o:,}: {e}')
             if auth_needed:
-                print('  auth rejected — refreshing token')
+                print(f'  server stopped serving (said: {auth_needed}) — refreshing token')
                 if not try_refresh():
                     raise NeedPaste()        # main thread will prompt you, then retry this read
             elif len(got) < len(offsets):
